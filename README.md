@@ -65,6 +65,10 @@ Important endpoints:
 - `GET /api/logs`
 - `POST /api/import/legacy`
 
+## CI
+
+GitHub Actions runs the API tests, Python compilation check, and JavaScript syntax check on every push to `main` and on pull requests. The deployed systemd service is intentionally not changed from CI; production deployment remains an explicit server operation.
+
 ## Security notes
 
 Do not commit `.env`, `data/`, `account.txt`, or `proxy.txt`. Nginx should be the only public listener; Uvicorn is bound to loopback. Use a unique administrator password, keep the encryption key backed up in a secret manager, and restrict shell access to the server.
