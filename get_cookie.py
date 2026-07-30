@@ -13,6 +13,7 @@ class LoginResult:
     success: bool
     cookie: str | None
     message: str
+    user_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -51,6 +52,19 @@ def _has_new_or_updated_cookie(
         previous_values.get((item["name"], item["domain"], item["path"])) != item["value"]
         for item in cookies
     )
+
+
+def _user_id_from_login_payload(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    for key in ("id", "user_id", "userId"):
+        value = data.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
 
 
 def retrieve_session_cookie(
@@ -97,9 +111,10 @@ def retrieve_session_cookie(
 
                 login_response_seen = False
                 login_response_failed = False
+                authenticated_user_id: str | None = None
 
                 def observe_login_response(response) -> None:
-                    nonlocal login_response_seen, login_response_failed
+                    nonlocal authenticated_user_id, login_response_seen, login_response_failed
                     if response.request.method != "POST" or "login" not in response.url.lower():
                         return
                     login_response_seen = True
@@ -109,6 +124,8 @@ def retrieve_session_cookie(
                         return
                     if isinstance(payload, dict) and payload.get("success") is False:
                         login_response_failed = True
+                    if isinstance(payload, dict) and payload.get("success") is True:
+                        authenticated_user_id = _user_id_from_login_payload(payload)
 
                 page.on("response", observe_login_response)
 
@@ -155,7 +172,12 @@ def retrieve_session_cookie(
 
                 cookie = "; ".join(f"{item['name']}={item['value']}" for item in cookies)
                 if cookie:
-                    return LoginResult(True, cookie, "Login succeeded and session cookie was refreshed.")
+                    return LoginResult(
+                        True,
+                        cookie,
+                        "Login succeeded and session cookie was refreshed.",
+                        authenticated_user_id,
+                    )
                 return LoginResult(False, None, "Login completed but the browser did not receive a session cookie.")
             finally:
                 browser.close()

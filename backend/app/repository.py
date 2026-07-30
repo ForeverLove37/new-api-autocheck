@@ -290,6 +290,13 @@ class Repository:
                 (self.secrets.encrypt(cookie), self._now(), account_id),
             )
 
+    def set_user_id(self, account_id: int, user_id: str) -> None:
+        with self.database.connection() as connection:
+            connection.execute(
+                "UPDATE accounts SET user_id = ?, updated_at = ? WHERE id = ?",
+                (user_id, self._now(), account_id),
+            )
+
     def set_checkin_status(self, account_id: int, success: bool, message: str, timestamp: str) -> None:
         with self.database.connection() as connection:
             connection.execute(

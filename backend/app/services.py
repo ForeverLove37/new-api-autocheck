@@ -51,6 +51,8 @@ class CheckinService:
         self.repository.set_login_status(account_id, result.success)
         if result.success and result.cookie:
             self.repository.set_cookie(account_id, result.cookie)
+            if result.user_id:
+                self.repository.set_user_id(account_id, result.user_id)
         self.repository.record_log(
             account_id=account_id,
             action="login",

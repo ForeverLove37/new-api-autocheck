@@ -152,7 +152,7 @@ def test_login_and_checkin_use_service_contracts(tmp_path: Path, monkeypatch) ->
         else:
             raise AssertionError("Login work must run outside the ASGI event loop")
         assert kwargs["proxy"]["scheme"] == "http"
-        return LoginResult(True, "session=refreshed", "Login succeeded")
+        return LoginResult(True, "session=refreshed", "Login succeeded", user_id="42")
 
     def fake_checkin(**kwargs):
         try:
@@ -162,6 +162,7 @@ def test_login_and_checkin_use_service_contracts(tmp_path: Path, monkeypatch) ->
         else:
             raise AssertionError("Check-in work must run outside the ASGI event loop")
         assert kwargs["cookie"] == "session=refreshed"
+        assert kwargs["user_id"] == "42"
         assert kwargs["proxy_url"] == "http://proxy-user:proxy-password@127.0.0.1:8080"
         return CheckinResult(True, 200, "Checked in", {"success": True}, "2026-01-01T00:00:00+00:00")
 
