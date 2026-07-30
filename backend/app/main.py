@@ -10,6 +10,7 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from backend.app.config import ROOT_DIR, AppSettings
 from backend.app.crypto import AuthManager, SecretBox
@@ -169,7 +170,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @app.post("/api/accounts/{account_id}/login", response_model=ActionResult)
     async def login_account(account_id: int, request: Request, _: None = Depends(require_admin)) -> ActionResult:
-        result = get_container(request).checkins.login(account_id)
+        # Playwright's synchronous API must run outside FastAPI's event loop.
+        result = await run_in_threadpool(get_container(request).checkins.login, account_id)
         return ActionResult(**result)
 
     @app.post("/api/accounts/{account_id}/checkin", response_model=ActionResult)
@@ -179,7 +181,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         _: None = Depends(require_admin),
         refresh_cookie: bool = Query(default=False),
     ) -> ActionResult:
-        result = get_container(request).checkins.checkin(account_id, refresh_cookie=refresh_cookie)
+        result = await run_in_threadpool(
+            get_container(request).checkins.checkin,
+            account_id,
+            refresh_cookie=refresh_cookie,
+        )
         return ActionResult(**result)
 
     @app.post("/api/checkins/run", response_model=BatchCheckinResponse)
@@ -187,7 +193,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         payload: CheckinRunRequest, request: Request, _: None = Depends(require_admin)
     ) -> BatchCheckinResponse:
         try:
-            results = get_container(request).checkins.run_batch(
+            results = await run_in_threadpool(
+                get_container(request).checkins.run_batch,
                 payload.account_ids,
                 enabled_only=payload.enabled_accounts_only,
                 refresh_cookies=payload.refresh_cookies,

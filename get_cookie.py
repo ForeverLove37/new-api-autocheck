@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -34,6 +35,22 @@ def _playwright_proxy(proxy: dict[str, Any] | None) -> dict[str, str] | None:
     if proxy.get("password"):
         result["password"] = str(proxy["password"])
     return result
+
+
+def _cookie_values(cookies: list[dict[str, Any]]) -> dict[tuple[str, str, str], str]:
+    return {
+        (item["name"], item["domain"], item["path"]): item["value"]
+        for item in cookies
+    }
+
+
+def _has_new_or_updated_cookie(
+    cookies: list[dict[str, Any]], previous_values: dict[tuple[str, str, str], str]
+) -> bool:
+    return any(
+        previous_values.get((item["name"], item["domain"], item["path"])) != item["value"]
+        for item in cookies
+    )
 
 
 def retrieve_session_cookie(
@@ -76,12 +93,13 @@ def retrieve_session_cookie(
                 context = browser.new_context()
                 page = context.new_page()
                 page.goto(login_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                initial_cookie_values = _cookie_values(context.cookies([base_url]))
 
                 login_response_seen = False
-                login_response_succeeded = False
+                login_response_failed = False
 
                 def observe_login_response(response) -> None:
-                    nonlocal login_response_seen, login_response_succeeded
+                    nonlocal login_response_seen, login_response_failed
                     if response.request.method != "POST" or "login" not in response.url.lower():
                         return
                     login_response_seen = True
@@ -89,8 +107,8 @@ def retrieve_session_cookie(
                         payload = response.json()
                     except Exception:
                         return
-                    if isinstance(payload, dict) and payload.get("success") is True:
-                        login_response_succeeded = True
+                    if isinstance(payload, dict) and payload.get("success") is False:
+                        login_response_failed = True
 
                 page.on("response", observe_login_response)
 
@@ -102,23 +120,40 @@ def retrieve_session_cookie(
                 else:
                     password_input.press("Enter")
 
-                try:
-                    page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 12_000))
-                except PlaywrightTimeoutError:
-                    # Many dashboards keep polling after successful login.
-                    page.wait_for_timeout(1_500)
+                # The login request is commonly an AJAX request. Waiting for
+                # the current document's network-idle state can return before
+                # that request starts, allowing a subsequent navigation to
+                # cancel it. Instead, wait for the session cookie to change.
+                deadline = time.monotonic() + timeout_ms / 1_000
+                cookies: list[dict[str, Any]] = []
+                while time.monotonic() < deadline:
+                    if login_response_failed:
+                        return LoginResult(False, None, "The login endpoint reported an unsuccessful response.")
+                    cookies = context.cookies([base_url])
+                    if _has_new_or_updated_cookie(cookies, initial_cookie_values):
+                        break
+                    page.wait_for_timeout(100)
+                else:
+                    if login_response_seen:
+                        message = "Login completed but the browser did not receive a new session cookie."
+                    else:
+                        message = "Login submission did not produce a session response or a new session cookie."
+                    return LoginResult(False, None, message)
 
                 if post_login_path:
-                    page.goto(
-                        _resolve_url(base_url, post_login_path),
-                        wait_until="domcontentloaded",
-                        timeout=timeout_ms,
-                    )
+                    try:
+                        page.goto(
+                            _resolve_url(base_url, post_login_path),
+                            wait_until="domcontentloaded",
+                            timeout=timeout_ms,
+                        )
+                        cookies = context.cookies([base_url])
+                    except PlaywrightTimeoutError:
+                        # A captured session remains usable even if a dashboard
+                        # page keeps loading in the background.
+                        pass
 
-                cookies = context.cookies([base_url])
                 cookie = "; ".join(f"{item['name']}={item['value']}" for item in cookies)
-                if login_response_seen and not login_response_succeeded:
-                    return LoginResult(False, None, "The login endpoint did not report a successful response.")
                 if cookie:
                     return LoginResult(True, cookie, "Login succeeded and session cookie was refreshed.")
                 return LoginResult(False, None, "Login completed but the browser did not receive a session cookie.")

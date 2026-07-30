@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
+from starlette.concurrency import run_in_threadpool
 
 from checkin import CheckinResult
 from get_cookie import LoginResult
@@ -144,10 +145,22 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
 
 def test_login_and_checkin_use_service_contracts(tmp_path: Path, monkeypatch) -> None:
     def fake_login(**kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Login work must run outside the ASGI event loop")
         assert kwargs["proxy"]["scheme"] == "http"
         return LoginResult(True, "session=refreshed", "Login succeeded")
 
     def fake_checkin(**kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Check-in work must run outside the ASGI event loop")
         assert kwargs["cookie"] == "session=refreshed"
         assert kwargs["proxy_url"] == "http://proxy-user:proxy-password@127.0.0.1:8080"
         return CheckinResult(True, 200, "Checked in", {"success": True}, "2026-01-01T00:00:00+00:00")
@@ -158,45 +171,41 @@ def test_login_and_checkin_use_service_contracts(tmp_path: Path, monkeypatch) ->
     async def scenario() -> None:
         app = create_app(make_settings(tmp_path))
         async with app.router.lifespan_context(app):
-            headers = await authenticate(app)
-            status, proxy = await request(
-                app,
-                "POST",
-                "/api/proxies",
-                headers=headers,
-                payload={
+            repository = app.state.container.repository
+            proxy = repository.create_proxy(
+                {
                     "name": "HTTP proxy",
                     "scheme": "http",
                     "host": "127.0.0.1",
                     "port": 8080,
                     "username": "proxy-user",
                     "password": "proxy-password",
-                },
+                }
             )
-            assert status == 201
-            status, account = await request(
-                app,
-                "POST",
-                "/api/accounts",
-                headers=headers,
-                payload={
+            account = repository.create_account(
+                {
                     "username": "user@example.test",
                     "password": "account-password",
                     "proxy_id": proxy["id"],
-                },
+                }
             )
-            assert status == 201
+            checkins = app.state.container.checkins
 
-            status, login = await request(app, "POST", f"/api/accounts/{account['id']}/login", headers=headers)
-            assert status == 200
+            login = await run_in_threadpool(checkins.login, account["id"])
             assert login["success"] is True
 
-            status, checkin = await request(app, "POST", f"/api/accounts/{account['id']}/checkin", headers=headers)
-            assert status == 200
+            checkin = await run_in_threadpool(checkins.checkin, account["id"])
             assert checkin["status_code"] == 200
 
-            status, stored = await request(app, "GET", f"/api/accounts/{account['id']}", headers=headers)
-            assert status == 200
+            batch = await run_in_threadpool(
+                checkins.run_batch,
+                [account["id"]],
+                enabled_only=False,
+                refresh_cookies=True,
+            )
+            assert batch[0]["success"] is True
+
+            stored = repository.get_account(account["id"])
             assert stored["has_cookie"] is True
             assert stored["last_checkin_status"] == "success"
 

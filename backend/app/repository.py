@@ -25,7 +25,10 @@ DEFAULT_SITE_CONFIG: dict[str, Any] = {
     "schedule_hour": 8,
     "schedule_minute": 0,
     "schedule_timezone": "UTC",
-    "request_timeout_seconds": 20,
+    # Login pages can be temporarily slow while the target is under load.
+    # Keep this below the API schema maximum while allowing Playwright enough
+    # time to establish an authenticated browser session.
+    "request_timeout_seconds": 60,
 }
 
 
