@@ -1,0 +1,25 @@
+# Runtime secrets and imported legacy data
+account.txt
+proxy.txt
+.env
+data/*.db
+data/*.db-*
+data/.encryption_key
+data/.admin_password
+.playwright-browsers/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+.service-venv/
+venv/
+
+# Frontend and editor artifacts
+node_modules/
+dist/
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,9 @@
+[project]
+name = "new-api-autocheck"
+version = "1.0.0"
+description = "Self-hosted account check-in manager"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

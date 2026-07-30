@@ -1,0 +1,22 @@
+[Unit]
+Description=AutoCheck account check-in manager
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/checker
+EnvironmentFile=-/opt/checker/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/checker/.playwright-browsers
+ExecStart=/opt/checker/.service-venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --port 8010 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/opt/checker/data
+
+[Install]
+WantedBy=multi-user.target
