@@ -57,19 +57,41 @@ class AuthManager:
         auth_required: bool,
     ) -> None:
         self.auth_required = auth_required
-        self._password = (configured_password or self._load_or_create_password(data_dir)) if auth_required else ""
-        self._signing_key = signing_key
+        self._password_file = data_dir / ".admin_password"
+        self._root_signing_key = signing_key
+        if auth_required:
+            self._password = self._load_or_create_password(configured_password)
+            self._signing_key = self._derive_signing_key(self._password)
+        else:
+            self._password = ""
+            self._signing_key = signing_key
 
-    def _load_or_create_password(self, data_dir: Path) -> str:
-        password_file = data_dir / ".admin_password"
-        if password_file.exists():
-            return password_file.read_text(encoding="utf-8").strip()
+    def _load_or_create_password(self, configured_password: str | None) -> str:
+        if self._password_file.exists():
+            return self._password_file.read_text(encoding="utf-8").strip()
+        if configured_password:
+            return configured_password
         password = secrets.token_urlsafe(24)
-        _write_private_file(password_file, (password + "\n").encode("utf-8"))
+        _write_private_file(self._password_file, (password + "\n").encode("utf-8"))
         # This is intentionally emitted once so an operator can recover the
         # bootstrap password from the protected service journal.
         print("AutoCheck generated an admin password. Read data/.admin_password or set AUTOCHECK_ADMIN_PASSWORD.")
         return password
+
+    def change_password(self, current_password: str, new_password: str) -> str | None:
+        if not self.auth_required:
+            raise ValueError("Administrator password authentication is disabled.")
+        if not hmac.compare_digest(current_password, self._password):
+            return None
+        if hmac.compare_digest(new_password, self._password):
+            raise ValueError("The new administrator password must be different.")
+        _write_private_file(self._password_file, (new_password + "\n").encode("utf-8"))
+        self._password = new_password
+        self._signing_key = self._derive_signing_key(new_password)
+        return self.authenticate(new_password)
+
+    def _derive_signing_key(self, password: str) -> bytes:
+        return hmac.new(self._root_signing_key, b"admin-token:" + password.encode("utf-8"), hashlib.sha256).digest()
 
     def authenticate(self, password: str) -> str | None:
         if not self.auth_required:

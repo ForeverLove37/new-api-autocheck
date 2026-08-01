@@ -429,6 +429,10 @@ tbody tr:hover td {
   width: min(100%, 850px);
 }
 
+.settings-secondary {
+  margin-top: 34px;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -532,6 +536,13 @@ tbody tr:hover td {
 .modal-form {
   display: grid;
   gap: 14px;
+}
+
+.modal-section-title {
+  margin: 8px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 15px;
 }
 
 .icon-close {

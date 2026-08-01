@@ -24,6 +24,11 @@ class LoginResponse(StrictModel):
     token_type: Literal["bearer"] = "bearer"
 
 
+class PasswordChangeRequest(StrictModel):
+    current_password: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=12, max_length=512)
+
+
 class AuthStatus(StrictModel):
     auth_required: bool
 
@@ -69,6 +74,16 @@ class AccountCreate(StrictModel):
     user_id: str | None = Field(default=None, max_length=120)
     proxy_id: int | None = None
     enabled: bool = True
+    schedule_enabled: bool = False
+    schedule_hour: int = Field(default=8, ge=0, le=23)
+    schedule_minute: int = Field(default=0, ge=0, le=59)
+    schedule_timezone: str = Field(default="UTC", min_length=1, max_length=80)
+    schedule_jitter_minutes: int = Field(default=0, ge=0, le=720)
+
+    @field_validator("schedule_timezone")
+    @classmethod
+    def validate_schedule_timezone(cls, value: str) -> str:
+        return _validate_timezone(value)
 
 
 class AccountUpdate(StrictModel):
@@ -79,6 +94,16 @@ class AccountUpdate(StrictModel):
     user_id: str | None = Field(default=None, max_length=120)
     proxy_id: int | None = None
     enabled: bool | None = None
+    schedule_enabled: bool | None = None
+    schedule_hour: int | None = Field(default=None, ge=0, le=23)
+    schedule_minute: int | None = Field(default=None, ge=0, le=59)
+    schedule_timezone: str | None = Field(default=None, min_length=1, max_length=80)
+    schedule_jitter_minutes: int | None = Field(default=None, ge=0, le=720)
+
+    @field_validator("schedule_timezone")
+    @classmethod
+    def validate_schedule_timezone(cls, value: str | None) -> str | None:
+        return _validate_timezone(value) if value is not None else None
 
 
 class ProxyBrief(StrictModel):
@@ -97,6 +122,12 @@ class AccountResponse(StrictModel):
     user_id: str | None
     proxy: ProxyBrief | None
     enabled: bool
+    schedule_enabled: bool
+    schedule_hour: int
+    schedule_minute: int
+    schedule_timezone: str
+    schedule_jitter_minutes: int
+    next_scheduled_at: str | None = None
     has_password: bool
     has_cookie: bool
     last_login_at: str | None
@@ -143,11 +174,7 @@ class SiteConfig(StrictModel):
     @field_validator("schedule_timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("schedule_timezone must be a valid IANA timezone") from exc
-        return value
+        return _validate_timezone(value)
 
 
 class CheckinRunRequest(StrictModel):
@@ -209,3 +236,11 @@ class MessageResponse(StrictModel):
 
 class JsonPayload(StrictModel):
     payload: dict[str, Any]
+
+
+def _validate_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("schedule_timezone must be a valid IANA timezone") from exc
+    return value

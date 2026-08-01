@@ -84,8 +84,9 @@ class Repository:
                     """
                     INSERT INTO accounts (
                         label, username, password_ciphertext, cookie_ciphertext, user_id, proxy_id,
-                        enabled, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        enabled, schedule_enabled, schedule_hour, schedule_minute,
+                        schedule_timezone, schedule_jitter_minutes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         self._none_if_empty(values.get("label")),
@@ -95,6 +96,11 @@ class Repository:
                         self._none_if_empty(values.get("user_id")),
                         values.get("proxy_id"),
                         int(values.get("enabled", True)),
+                        int(values.get("schedule_enabled", False)),
+                        values.get("schedule_hour", 8),
+                        values.get("schedule_minute", 0),
+                        values.get("schedule_timezone", "UTC"),
+                        values.get("schedule_jitter_minutes", 0),
                         now,
                         now,
                     ),
@@ -109,12 +115,23 @@ class Repository:
         if "proxy_id" in changes:
             self._ensure_proxy_exists(changes["proxy_id"])
         mapped: dict[str, Any] = {}
-        direct_fields = {"label", "username", "user_id", "proxy_id", "enabled"}
+        direct_fields = {
+            "label",
+            "username",
+            "user_id",
+            "proxy_id",
+            "enabled",
+            "schedule_enabled",
+            "schedule_hour",
+            "schedule_minute",
+            "schedule_timezone",
+            "schedule_jitter_minutes",
+        }
         for key in direct_fields.intersection(changes):
             value = changes[key]
             if key in {"label", "user_id"}:
                 value = self._none_if_empty(value)
-            if key == "enabled" and value is not None:
+            if key in {"enabled", "schedule_enabled"} and value is not None:
                 value = int(value)
             mapped[key] = value
         if "password" in changes:
@@ -276,6 +293,37 @@ class Repository:
             )
         return config
 
+    def migrate_global_schedule(self) -> None:
+        marker_key = "account_schedule_migration_v1"
+        with self.database.connection() as connection:
+            if connection.execute("SELECT 1 FROM site_settings WHERE key = ?", (marker_key,)).fetchone():
+                return
+            row = connection.execute("SELECT value FROM site_settings WHERE key = 'site_config'").fetchone()
+            stored = json.loads(row["value"]) if row else {}
+            if stored.get("schedule_enabled"):
+                connection.execute(
+                    """
+                    UPDATE accounts
+                    SET schedule_enabled = 1,
+                        schedule_hour = ?,
+                        schedule_minute = ?,
+                        schedule_timezone = ?,
+                        schedule_jitter_minutes = 0,
+                        updated_at = ?
+                    WHERE enabled = 1
+                    """,
+                    (
+                        stored.get("schedule_hour", 8),
+                        stored.get("schedule_minute", 0),
+                        stored.get("schedule_timezone", "UTC"),
+                        self._now(),
+                    ),
+                )
+            connection.execute(
+                "INSERT INTO site_settings (key, value, updated_at) VALUES (?, '1', ?)",
+                (marker_key, self._now()),
+            )
+
     def set_login_status(self, account_id: int, success: bool) -> None:
         with self.database.connection() as connection:
             connection.execute(
@@ -405,6 +453,32 @@ class Repository:
                 rows = connection.execute("SELECT id FROM accounts ORDER BY id").fetchall()
         return [int(row["id"]) for row in rows]
 
+    def list_scheduled_accounts(self) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, schedule_hour, schedule_minute, schedule_timezone,
+                       schedule_jitter_minutes
+                FROM accounts
+                WHERE enabled = 1 AND schedule_enabled = 1
+                ORDER BY id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_scheduled_account(self, account_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT id, schedule_hour, schedule_minute, schedule_timezone,
+                       schedule_jitter_minutes
+                FROM accounts
+                WHERE id = ? AND enabled = 1 AND schedule_enabled = 1
+                """,
+                (account_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def upsert_legacy_account(self, *, username: str, password: str, label: str | None) -> bool:
         now = self._now()
         with self.database.connection() as connection:
@@ -516,6 +590,11 @@ class Repository:
             "user_id": row["user_id"],
             "proxy": proxy,
             "enabled": bool(row["enabled"]),
+            "schedule_enabled": bool(row["schedule_enabled"]),
+            "schedule_hour": row["schedule_hour"],
+            "schedule_minute": row["schedule_minute"],
+            "schedule_timezone": row["schedule_timezone"],
+            "schedule_jitter_minutes": row["schedule_jitter_minutes"],
             "has_password": bool(row["password_ciphertext"]),
             "has_cookie": bool(row["cookie_ciphertext"]),
             "last_login_at": row["last_login_at"],

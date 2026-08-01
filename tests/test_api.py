@@ -11,7 +11,10 @@ from starlette.concurrency import run_in_threadpool
 from checkin import CheckinResult
 from get_cookie import LoginResult
 from backend.app.config import AppSettings
+from backend.app.crypto import SecretBox
+from backend.app.database import Database
 from backend.app.main import create_app
+from backend.app.repository import Repository
 
 
 def make_settings(tmp_path: Path) -> AppSettings:
@@ -112,9 +115,21 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
                 "POST",
                 "/api/accounts",
                 headers=headers,
-                payload={"label": "First", "username": "first@example.test", "password": "secret-one"},
+                payload={
+                    "label": "First",
+                    "username": "first@example.test",
+                    "password": "secret-one",
+                    "schedule_enabled": True,
+                    "schedule_hour": 6,
+                    "schedule_minute": 15,
+                    "schedule_timezone": "Asia/Shanghai",
+                    "schedule_jitter_minutes": 20,
+                },
             )
             assert status == 201
+            assert first["schedule_enabled"] is True
+            assert first["next_scheduled_at"] is not None
+            first_next_run = first["next_scheduled_at"]
             status, second = await request(
                 app,
                 "POST",
@@ -125,6 +140,30 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
             assert status == 201
             assert first["has_password"] is True
             assert "password" not in first
+
+            status, second = await request(
+                app,
+                "PATCH",
+                f"/api/accounts/{second['id']}",
+                headers=headers,
+                payload={
+                    "schedule_enabled": True,
+                    "schedule_hour": 19,
+                    "schedule_minute": 45,
+                    "schedule_timezone": "UTC",
+                    "schedule_jitter_minutes": 5,
+                },
+            )
+            assert status == 200
+            assert second["next_scheduled_at"] is not None
+
+            first_job = app.state.container.scheduler.scheduler.get_job(f"daily-checkin:{first['id']}")
+            second_job = app.state.container.scheduler.scheduler.get_job(f"daily-checkin:{second['id']}")
+            assert first_job.trigger.jitter == 20 * 60
+            assert str(first_job.trigger.timezone) == "Asia/Shanghai"
+            assert second_job.trigger.jitter == 5 * 60
+            assert str(second_job.trigger.timezone) == "UTC"
+            assert app.state.container.scheduler.next_run_at(first["id"]) == first_next_run
 
             status, assigned = await request(
                 app,
@@ -139,6 +178,83 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
             status, accounts = await request(app, "GET", "/api/accounts", headers=headers)
             assert status == 200
             assert all(account["proxy"]["id"] == proxy["id"] for account in accounts)
+
+    asyncio.run(scenario())
+
+
+def test_admin_password_change_invalidates_tokens_and_persists(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+
+    async def change_password() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            old_headers = await authenticate(app)
+            status, changed = await request(
+                app,
+                "PUT",
+                "/api/auth/password",
+                headers=old_headers,
+                payload={
+                    "current_password": "test-admin-password",
+                    "new_password": "replacement-admin-password",
+                },
+            )
+            assert status == 200
+            new_headers = {"Authorization": f"Bearer {changed['access_token']}"}
+
+            status, _ = await request(app, "GET", "/api/accounts", headers=old_headers)
+            assert status == 401
+            status, _ = await request(app, "GET", "/api/accounts", headers=new_headers)
+            assert status == 200
+            status, _ = await request(
+                app,
+                "POST",
+                "/api/auth/login",
+                payload={"password": "test-admin-password"},
+            )
+            assert status == 401
+
+    async def verify_restart() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            status, _ = await request(
+                app,
+                "POST",
+                "/api/auth/login",
+                payload={"password": "replacement-admin-password"},
+            )
+            assert status == 200
+
+    asyncio.run(change_password())
+    asyncio.run(verify_restart())
+
+
+def test_global_schedule_is_migrated_to_existing_accounts(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    database = Database(settings.database_path)
+    database.initialize()
+    repository = Repository(database, SecretBox(settings.data_dir, settings.encryption_key))
+    account = repository.create_account(
+        {"username": "scheduled@example.test", "password": "password"}
+    )
+    repository.save_site_config(
+        {
+            "schedule_enabled": True,
+            "schedule_hour": 7,
+            "schedule_minute": 35,
+            "schedule_timezone": "Asia/Tokyo",
+        }
+    )
+
+    async def scenario() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            migrated = app.state.container.repository.get_account(account["id"])
+            assert migrated["schedule_enabled"] is True
+            assert migrated["schedule_hour"] == 7
+            assert migrated["schedule_minute"] == 35
+            assert migrated["schedule_timezone"] == "Asia/Tokyo"
+            assert app.state.container.scheduler.next_run_at(account["id"]) is not None
 
     asyncio.run(scenario())
 

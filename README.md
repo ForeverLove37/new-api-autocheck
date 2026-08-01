@@ -18,9 +18,11 @@ Open `http://127.0.0.1:8010`. The first protected startup creates a random admin
 
 ## Site configuration
 
-Use **Site settings** to set the base URL, login/check-in paths, selectors for the target site's login form, extra check-in headers, and the daily schedule. A path can also be a full URL. The default values match the supplied templates. Set an account's optional **User ID** when the target requires a `new-api-user` request header.
+Use **Site settings** to set the base URL, login/check-in paths, selectors for the target site's login form, and extra check-in headers. A path can also be a full URL. The default values match the supplied templates. Set an account's optional **User ID** when the target requires a `new-api-user` request header.
 
-Login runs Chromium through the assigned proxy and refreshes the encrypted session cookie. Check-ins use the stored cookie and the same proxy. A scheduled run uses enabled accounts and stored cookies; use the UI's refresh-and-run command when the target invalidates sessions frequently.
+Each account has its own daily schedule, timezone, and optional random delay window. A delay of 15 minutes runs that account once between its configured time and 15 minutes afterward. Login runs Chromium through the assigned proxy and refreshes the encrypted session cookie. Check-ins use the stored cookie and the same proxy. Scheduled runs use stored cookies; use the UI's refresh-and-run command when the target invalidates sessions frequently.
+
+The administrator password can be changed in **Site settings**. A successful change persists to `data/.admin_password`, invalidates previously issued access tokens, and returns a replacement token to the current browser session.
 
 ## Deployment
 

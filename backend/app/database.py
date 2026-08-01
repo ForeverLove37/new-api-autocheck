@@ -8,6 +8,15 @@ from pathlib import Path
 from typing import Iterator
 
 
+ACCOUNT_SCHEDULE_COLUMNS = {
+    "schedule_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "schedule_hour": "INTEGER NOT NULL DEFAULT 8",
+    "schedule_minute": "INTEGER NOT NULL DEFAULT 0",
+    "schedule_timezone": "TEXT NOT NULL DEFAULT 'UTC'",
+    "schedule_jitter_minutes": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -55,6 +64,11 @@ class Database:
                     user_id TEXT,
                     proxy_id INTEGER REFERENCES proxies(id) ON DELETE SET NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                    schedule_hour INTEGER NOT NULL DEFAULT 8,
+                    schedule_minute INTEGER NOT NULL DEFAULT 0,
+                    schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+                    schedule_jitter_minutes INTEGER NOT NULL DEFAULT 0,
                     last_login_at TEXT,
                     last_login_status TEXT,
                     last_checkin_at TEXT,
@@ -85,3 +99,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_logs_created_at ON checkin_logs(created_at DESC);
                 """
             )
+            existing_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(accounts)").fetchall()
+            }
+            for column, declaration in ACCOUNT_SCHEDULE_COLUMNS.items():
+                if column not in existing_columns:
+                    connection.execute(f"ALTER TABLE accounts ADD COLUMN {column} {declaration}")

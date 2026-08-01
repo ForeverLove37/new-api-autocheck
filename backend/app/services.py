@@ -121,9 +121,9 @@ class CheckinService:
 
 
 class DailyCheckinScheduler:
-    """In-process daily job. Its config is stored through the Site Config API."""
+    """In-process daily jobs configured independently for each account."""
 
-    job_id = "daily-checkin"
+    job_prefix = "daily-checkin:"
 
     def __init__(self, service: CheckinService, repository: Repository) -> None:
         self.service = service
@@ -134,40 +134,60 @@ class DailyCheckinScheduler:
         self.scheduler.start()
         self.refresh()
 
-    def refresh(self) -> None:
-        config = self.repository.get_site_config()
-        if self.scheduler.get_job(self.job_id):
-            self.scheduler.remove_job(self.job_id)
-        if not config["schedule_enabled"]:
+    def refresh(self, account_id: int | None = None) -> None:
+        if account_id is not None:
+            job_id = self._job_id(account_id)
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+            account = self.repository.get_scheduled_account(account_id)
+            if account:
+                self._add_account_job(account)
             return
+
+        for job in self.scheduler.get_jobs():
+            if job.id.startswith(self.job_prefix):
+                self.scheduler.remove_job(job.id)
+        for account in self.repository.list_scheduled_accounts():
+            self._add_account_job(account)
+
+    def next_run_at(self, account_id: int) -> str | None:
+        job = self.scheduler.get_job(self._job_id(account_id))
+        next_run_time = getattr(job, "next_run_time", None) if job else None
+        return next_run_time.astimezone(timezone.utc).isoformat() if next_run_time else None
+
+    def shutdown(self) -> None:
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
+
+    def _run_scheduled(self, account_id: int) -> None:
+        try:
+            self.service.checkin(account_id, refresh_cookie=False)
+        except Exception as exc:
+            # The scheduler has no HTTP response channel. This leaves a useful
+            # record in the service journal without exposing secrets.
+            print(f"Scheduled check-in failed: {exc}")
+
+    def _add_account_job(self, account: dict[str, Any]) -> None:
+        account_id = int(account["id"])
         trigger = CronTrigger(
-            hour=config["schedule_hour"],
-            minute=config["schedule_minute"],
-            timezone=config["schedule_timezone"],
+            hour=account["schedule_hour"],
+            minute=account["schedule_minute"],
+            timezone=account["schedule_timezone"],
+            jitter=account["schedule_jitter_minutes"] * 60,
         )
         self.scheduler.add_job(
             self._run_scheduled,
             trigger=trigger,
-            id=self.job_id,
+            args=[account_id],
+            id=self._job_id(account_id),
             replace_existing=True,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3_600,
         )
 
-    def shutdown(self) -> None:
-        if self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
-
-    def _run_scheduled(self) -> None:
-        try:
-            self.service.run_batch(None, enabled_only=True, refresh_cookies=False)
-        except OperationInProgressError:
-            return
-        except Exception as exc:
-            # The scheduler has no HTTP response channel. This leaves a useful
-            # record in the service journal without exposing secrets.
-            print(f"Scheduled check-in failed: {exc}")
+    def _job_id(self, account_id: int) -> str:
+        return f"{self.job_prefix}{account_id}"
 
 
 def _request_proxy_url(proxy: dict[str, Any] | None) -> str | None:

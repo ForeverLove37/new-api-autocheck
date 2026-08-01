@@ -31,6 +31,7 @@ from backend.app.schemas import (
     LoginResponse,
     LogResponse,
     MessageResponse,
+    PasswordChangeRequest,
     ProxyAssignmentRequest,
     ProxyAssignmentResponse,
     ProxyCreate,
@@ -80,6 +81,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 import_accounts=repository.count_accounts() == 0,
                 import_proxies=repository.count_proxies() == 0,
             )
+        repository.migrate_global_schedule()
         scheduler.start()
         try:
             yield
@@ -105,6 +107,12 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     def get_container(request: Request) -> Container:
         return request.app.state.container
+
+    def account_response(container: Container, account: dict) -> AccountResponse:
+        return AccountResponse(
+            **account,
+            next_scheduled_at=container.scheduler.next_run_at(int(account["id"])),
+        )
 
     async def require_admin(
         request: Request,
@@ -133,6 +141,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid administrator password")
         return LoginResponse(access_token=token)
 
+    @app.put("/api/auth/password", response_model=LoginResponse)
+    async def change_password(
+        payload: PasswordChangeRequest,
+        request: Request,
+        _: None = Depends(require_admin),
+    ) -> LoginResponse:
+        token = get_container(request).auth.change_password(payload.current_password, payload.new_password)
+        if not token:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+        return LoginResponse(access_token=token)
+
     @app.get("/api/summary", response_model=SummaryResponse)
     async def summary(request: Request, _: None = Depends(require_admin)) -> SummaryResponse:
         data = get_container(request).repository.summary()
@@ -140,32 +159,38 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @app.get("/api/accounts", response_model=list[AccountResponse])
     async def list_accounts(request: Request, _: None = Depends(require_admin)) -> list[AccountResponse]:
-        accounts = get_container(request).repository.list_accounts()
-        return [AccountResponse(**item) for item in accounts]
+        container = get_container(request)
+        return [account_response(container, item) for item in container.repository.list_accounts()]
 
     @app.post("/api/accounts", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
     async def create_account(
         payload: AccountCreate, request: Request, _: None = Depends(require_admin)
     ) -> AccountResponse:
-        account = get_container(request).repository.create_account(payload.model_dump())
-        return AccountResponse(**account)
+        container = get_container(request)
+        account = container.repository.create_account(payload.model_dump())
+        container.scheduler.refresh(int(account["id"]))
+        return account_response(container, account)
 
     @app.get("/api/accounts/{account_id}", response_model=AccountResponse)
     async def get_account(account_id: int, request: Request, _: None = Depends(require_admin)) -> AccountResponse:
-        account = get_container(request).repository.get_account(account_id)
-        return AccountResponse(**account)
+        container = get_container(request)
+        return account_response(container, container.repository.get_account(account_id))
 
     @app.patch("/api/accounts/{account_id}", response_model=AccountResponse)
     async def update_account(
         account_id: int, payload: AccountUpdate, request: Request, _: None = Depends(require_admin)
     ) -> AccountResponse:
+        container = get_container(request)
         changes = payload.model_dump(exclude_unset=True)
-        account = get_container(request).repository.update_account(account_id, changes)
-        return AccountResponse(**account)
+        account = container.repository.update_account(account_id, changes)
+        container.scheduler.refresh(account_id)
+        return account_response(container, account)
 
     @app.delete("/api/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_account(account_id: int, request: Request, _: None = Depends(require_admin)) -> Response:
-        get_container(request).repository.delete_account(account_id)
+        container = get_container(request)
+        container.repository.delete_account(account_id)
+        container.scheduler.refresh(account_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post("/api/accounts/{account_id}/login", response_model=ActionResult)
@@ -244,7 +269,6 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     async def update_config(payload: SiteConfig, request: Request, _: None = Depends(require_admin)) -> SiteConfig:
         container = get_container(request)
         saved = container.repository.save_site_config(payload.model_dump())
-        container.scheduler.refresh()
         return SiteConfig(**saved)
 
     @app.get("/api/logs", response_model=list[LogResponse])
@@ -268,6 +292,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             import_accounts=payload.import_accounts,
             import_proxies=payload.import_proxies,
         )
+        container.scheduler.refresh()
         return LegacyImportResponse(**stats.to_dict())
 
     static_dir = ROOT_DIR / "static"

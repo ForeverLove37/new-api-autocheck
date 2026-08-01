@@ -50,6 +50,17 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+function formatSchedule(account) {
+  if (!account.schedule_enabled) return '<span class="muted">Off</span>';
+  const hour = String(account.schedule_hour).padStart(2, "0");
+  const minute = String(account.schedule_minute).padStart(2, "0");
+  const jitter = account.schedule_jitter_minutes
+    ? ` + 0-${account.schedule_jitter_minutes} min`
+    : "";
+  const nextRun = account.enabled ? formatDate(account.next_scheduled_at) : "Account disabled";
+  return `<div class="cell-primary">${hour}:${minute}${escapeHtml(jitter)}</div><div class="cell-secondary">${escapeHtml(account.schedule_timezone)} | ${escapeHtml(nextRun)}</div>`;
+}
+
 function statusBadge(status, fallback = "Not run") {
   if (status === "success") return '<span class="status status-success">Success</span>';
   if (status === "failed") return '<span class="status status-failure">Failed</span>';
@@ -216,6 +227,7 @@ function accountTable(accounts, options = {}) {
           <td>${account.enabled ? statusBadge("enabled") : statusBadge("disabled")}</td>
           <td>${account.has_cookie ? statusBadge("stored") : statusBadge("missing")}</td>
           <td>${account.proxy ? `<div class="cell-primary">${escapeHtml(account.proxy.name)}</div><div class="cell-secondary">${escapeHtml(account.proxy.scheme)}://${escapeHtml(account.proxy.host)}:${account.proxy.port}</div>` : '<span class="muted">Direct</span>'}</td>
+          <td>${formatSchedule(account)}</td>
           <td><div>${statusBadge(account.last_checkin_status)}</div><div class="cell-secondary">${escapeHtml(formatDate(account.last_checkin_at))}</div></td>
           <td>
             <div class="table-actions">
@@ -231,7 +243,7 @@ function accountTable(accounts, options = {}) {
   return `
     <div class="data-panel table-wrap">
       <table>
-        <thead><tr>${selectionHeader}<th>Account</th><th>State</th><th>Session</th><th>Proxy</th><th>Last check-in</th><th></th></tr></thead>
+        <thead><tr>${selectionHeader}<th>Account</th><th>State</th><th>Session</th><th>Proxy</th><th>Schedule</th><th>Last check-in</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -273,7 +285,7 @@ function renderSettings() {
   return `
     <section class="view">
       <header class="view-header">
-        <div><h1 class="view-title">Site settings</h1><p class="view-subtitle">Target URLs, browser selectors, and daily execution</p></div>
+        <div><h1 class="view-title">Site settings</h1><p class="view-subtitle">Target URLs, browser selectors, and administrator access</p></div>
       </header>
       <form class="stacked-form" data-form="settings">
         <section class="form-section">
@@ -296,16 +308,18 @@ function renderSettings() {
             <label class="field-span-full">Custom request headers (JSON)<textarea name="custom_headers" spellcheck="false">${escapeHtml(JSON.stringify(config.custom_headers, null, 2))}</textarea></label>
           </div>
         </section>
+        <div class="action-row"><button class="button button-primary" type="submit">Save settings</button></div>
+      </form>
+      <form class="stacked-form settings-secondary" data-form="password-change">
         <section class="form-section">
-          <h2>Daily schedule</h2>
-          <div class="field-grid triple">
-            <label class="check-label"><input name="schedule_enabled" type="checkbox" ${config.schedule_enabled ? "checked" : ""} />Enable daily run</label>
-            <label>Hour<input name="schedule_hour" type="number" min="0" max="23" required value="${config.schedule_hour}" /></label>
-            <label>Minute<input name="schedule_minute" type="number" min="0" max="59" required value="${config.schedule_minute}" /></label>
-            <label>Timezone<input name="schedule_timezone" required value="${escapeHtml(config.schedule_timezone)}" /></label>
+          <h2>Administrator password</h2>
+          <div class="field-grid">
+            <label>Current password<input name="current_password" type="password" autocomplete="current-password" required /></label>
+            <label>New password<input name="new_password" type="password" autocomplete="new-password" minlength="12" required /></label>
+            <label>Confirm new password<input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required /></label>
           </div>
         </section>
-        <div class="action-row"><button class="button button-primary" type="submit">Save settings</button></div>
+        <div class="action-row"><button class="button button-primary" type="submit">Change password</button></div>
       </form>
     </section>`;
 }
@@ -373,6 +387,12 @@ function openAccountModal(account = null) {
           <label>Proxy<select name="proxy_id"><option value="">No proxy</option>${proxyOptions(account?.proxy?.id)}</select></label>
           <label class="check-label"><input name="enabled" type="checkbox" ${account?.enabled ?? true ? "checked" : ""} />Enabled</label>
           ${isEdit ? '<label class="check-label field-span-full"><input name="clear_cookie" type="checkbox" />Clear stored session cookie</label>' : ""}
+          <h3 class="modal-section-title field-span-full">Daily schedule</h3>
+          <label class="check-label field-span-full"><input name="schedule_enabled" type="checkbox" ${account?.schedule_enabled ? "checked" : ""} />Enable automatic check-in</label>
+          <label>Hour<input name="schedule_hour" type="number" min="0" max="23" required value="${account?.schedule_hour ?? 8}" /></label>
+          <label>Minute<input name="schedule_minute" type="number" min="0" max="59" required value="${account?.schedule_minute ?? 0}" /></label>
+          <label>Timezone<input name="schedule_timezone" required value="${escapeHtml(account?.schedule_timezone || "UTC")}" /></label>
+          <label>Random delay (minutes)<input name="schedule_jitter_minutes" type="number" min="0" max="720" required value="${account?.schedule_jitter_minutes ?? 0}" /></label>
         </div>
       </form>`,
     isEdit ? "Save account" : "Create account",
@@ -574,12 +594,13 @@ document.addEventListener("submit", async (event) => {
 
   if (!form.dataset.form) return;
   event.preventDefault();
-  const submitButton = modal.querySelector("button[type=submit][form]");
+  const submitButton = form.querySelector('button[type="submit"]') || modal.querySelector("button[type=submit][form]");
   setButtonBusy(submitButton, true);
   try {
     if (form.dataset.form === "account") await submitAccount(form);
     if (form.dataset.form === "proxy") await submitProxy(form);
     if (form.dataset.form === "settings") await submitSettings(form);
+    if (form.dataset.form === "password-change") await submitPasswordChange(form);
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -598,6 +619,11 @@ async function submitAccount(form) {
     user_id: values.get("user_id").trim() || null,
     proxy_id: values.get("proxy_id") ? Number(values.get("proxy_id")) : null,
     enabled: form.enabled.checked,
+    schedule_enabled: form.schedule_enabled.checked,
+    schedule_hour: Number(values.get("schedule_hour")),
+    schedule_minute: Number(values.get("schedule_minute")),
+    schedule_timezone: values.get("schedule_timezone").trim(),
+    schedule_jitter_minutes: Number(values.get("schedule_jitter_minutes")),
   };
   if (!isEdit || password) payload.password = password || null;
   if (!isEdit || cookie) payload.cookie = cookie || null;
@@ -655,15 +681,30 @@ async function submitSettings(form) {
     submit_selector: values.get("submit_selector").trim() || null,
     post_login_path: values.get("post_login_path").trim() || null,
     custom_headers: headers,
-    schedule_enabled: form.schedule_enabled.checked,
-    schedule_hour: Number(values.get("schedule_hour")),
-    schedule_minute: Number(values.get("schedule_minute")),
-    schedule_timezone: values.get("schedule_timezone").trim(),
     request_timeout_seconds: Number(values.get("request_timeout_seconds")),
   };
   await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
   toast("Site settings saved.");
   await refreshAndRender();
+}
+
+async function submitPasswordChange(form) {
+  const values = new FormData(form);
+  const newPassword = values.get("new_password");
+  if (newPassword !== values.get("confirm_password")) {
+    throw new Error("New password confirmation does not match.");
+  }
+  const result = await api("/api/auth/password", {
+    method: "PUT",
+    body: JSON.stringify({
+      current_password: values.get("current_password"),
+      new_password: newPassword,
+    }),
+  });
+  state.token = result.access_token;
+  localStorage.setItem("autocheck.token", state.token);
+  form.reset();
+  toast("Administrator password changed.");
 }
 
 document.getElementById("logout-button").addEventListener("click", showAuthentication);
