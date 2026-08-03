@@ -18,9 +18,9 @@ Open `http://127.0.0.1:8010`. The first protected startup creates a random admin
 
 ## Site configuration
 
-Use **Site settings** to set the base URL, login/check-in paths, selectors for the target site's login form, and extra check-in headers. A path can also be a full URL. The default values match the supplied templates. Set an account's optional **User ID** when the target requires a `new-api-user` request header.
+Use **Site settings** to set the base URL, login/check-in/balance paths, selectors for the target site's login form, and extra authenticated request headers. A path can also be a full URL. The default values match the supplied templates. Set an account's optional **User ID** when the target requires a `new-api-user` request header.
 
-Each account has its own daily schedule, timezone, and optional random delay window. A delay of 15 minutes runs that account once between its configured time and 15 minutes afterward. Login runs Chromium through the assigned proxy and refreshes the encrypted session cookie. Check-ins use the stored cookie and the same proxy. Scheduled runs use stored cookies; use the UI's refresh-and-run command when the target invalidates sessions frequently.
+Each account has its own daily enable switch, hour, minute, and optional random delay window. One global IANA timezone controls every account schedule and every timestamp displayed by the SPA. Timestamps remain stored in UTC. A delay of 15 minutes runs that account once between its configured time and 15 minutes afterward. Login runs Chromium through the assigned proxy and refreshes the encrypted session cookie. Check-ins and balance checks use the stored cookie, target user ID, and same proxy. Scheduled runs use stored cookies; use the UI's refresh-and-run command when the target invalidates sessions frequently.
 
 The administrator password can be changed in **Site settings**. A successful change persists to `data/.admin_password`, invalidates previously issued access tokens, and returns a replacement token to the current browser session.
 
@@ -61,9 +61,12 @@ Important endpoints:
 - `POST /api/accounts/{id}/login`
 - `POST /api/accounts/{id}/checkin?refresh_cookie=true`
 - `POST /api/checkins/run`
+- `POST /api/accounts/{id}/balance?refresh_cookie=true`
+- `POST /api/balances/run`
 - `GET, POST /api/proxies`, `PATCH, DELETE /api/proxies/{id}`
 - `PATCH /api/proxies/assignments`
 - `GET, PUT /api/config`
+- `GET /api/timezones`
 - `GET /api/logs`
 - `POST /api/import/legacy`
 

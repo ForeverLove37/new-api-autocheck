@@ -135,6 +135,12 @@ class AccountResponse(StrictModel):
     last_checkin_at: str | None
     last_checkin_status: str | None
     last_checkin_message: str | None
+    last_balance_quota: float | None
+    last_balance_amount: float | None
+    last_balance_display: str | None
+    last_balance_at: str | None
+    last_balance_status: str | None
+    last_balance_message: str | None
     created_at: str
     updated_at: str
 
@@ -152,6 +158,8 @@ class SiteConfig(StrictModel):
     base_url: str = Field(min_length=8, max_length=2_000)
     login_path: str = Field(min_length=1, max_length=2_000)
     checkin_path: str = Field(min_length=1, max_length=2_000)
+    balance_path: str = Field(min_length=1, max_length=2_000)
+    status_path: str = Field(min_length=1, max_length=2_000)
     referer_path: str | None = Field(default=None, max_length=2_000)
     username_selector: str = Field(min_length=1, max_length=1_000)
     password_selector: str = Field(min_length=1, max_length=1_000)
@@ -183,6 +191,12 @@ class CheckinRunRequest(StrictModel):
     refresh_cookies: bool = False
 
 
+class BalanceRunRequest(StrictModel):
+    account_ids: list[int] | None = Field(default=None, max_length=1_000)
+    enabled_accounts_only: bool = True
+    refresh_cookies: bool = False
+
+
 class ActionResult(StrictModel):
     account_id: int
     action: Literal["login", "checkin"]
@@ -194,6 +208,22 @@ class ActionResult(StrictModel):
 
 class BatchCheckinResponse(StrictModel):
     results: list[ActionResult]
+
+
+class BalanceActionResult(StrictModel):
+    account_id: int
+    action: Literal["balance"] = "balance"
+    success: bool
+    status_code: int | None = None
+    message: str
+    quota: float | None = None
+    balance: float | None = None
+    display: str | None = None
+    timestamp: str
+
+
+class BatchBalanceResponse(StrictModel):
+    results: list[BalanceActionResult]
 
 
 class LogResponse(StrictModel):

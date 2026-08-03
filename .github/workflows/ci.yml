@@ -19,5 +19,5 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
       - run: python -m pytest -q
-      - run: python -m compileall -q checkin.py get_cookie.py backend tests
+      - run: python -m compileall -q balance.py checkin.py get_cookie.py backend tests
       - run: node --check static/app.js

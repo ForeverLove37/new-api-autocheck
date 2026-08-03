@@ -16,6 +16,15 @@ ACCOUNT_SCHEDULE_COLUMNS = {
     "schedule_jitter_minutes": "INTEGER NOT NULL DEFAULT 0",
 }
 
+ACCOUNT_BALANCE_COLUMNS = {
+    "last_balance_quota": "REAL",
+    "last_balance_amount": "REAL",
+    "last_balance_display": "TEXT",
+    "last_balance_at": "TEXT",
+    "last_balance_status": "TEXT",
+    "last_balance_message": "TEXT",
+}
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -74,6 +83,12 @@ class Database:
                     last_checkin_at TEXT,
                     last_checkin_status TEXT,
                     last_checkin_message TEXT,
+                    last_balance_quota REAL,
+                    last_balance_amount REAL,
+                    last_balance_display TEXT,
+                    last_balance_at TEXT,
+                    last_balance_status TEXT,
+                    last_balance_message TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -102,6 +117,6 @@ class Database:
             existing_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(accounts)").fetchall()
             }
-            for column, declaration in ACCOUNT_SCHEDULE_COLUMNS.items():
+            for column, declaration in {**ACCOUNT_SCHEDULE_COLUMNS, **ACCOUNT_BALANCE_COLUMNS}.items():
                 if column not in existing_columns:
                     connection.execute(f"ALTER TABLE accounts ADD COLUMN {column} {declaration}")

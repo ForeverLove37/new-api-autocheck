@@ -332,6 +332,10 @@ table {
   border-collapse: collapse;
 }
 
+.account-table {
+  min-width: 1050px;
+}
+
 th,
 td {
   padding: 11px 12px;
@@ -359,6 +363,7 @@ tbody tr:hover td {
 .table-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
 }
 

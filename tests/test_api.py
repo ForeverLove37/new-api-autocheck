@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet
 from starlette.concurrency import run_in_threadpool
 
+from balance import BalanceResult
 from checkin import CheckinResult
 from get_cookie import LoginResult
 from backend.app.config import AppSettings
@@ -93,6 +94,16 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
             assert status == 401
             headers = await authenticate(app)
 
+            status, config = await request(app, "GET", "/api/config", headers=headers)
+            assert status == 200
+            config["schedule_timezone"] = "Asia/Shanghai"
+            status, config = await request(app, "PUT", "/api/config", headers=headers, payload=config)
+            assert status == 200
+            status, timezones = await request(app, "GET", "/api/timezones", headers=headers)
+            assert status == 200
+            assert timezones[0] == "UTC"
+            assert "Asia/Shanghai" in timezones
+
             status, proxy = await request(
                 app,
                 "POST",
@@ -122,12 +133,13 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
                     "schedule_enabled": True,
                     "schedule_hour": 6,
                     "schedule_minute": 15,
-                    "schedule_timezone": "Asia/Shanghai",
+                    "schedule_timezone": "Europe/London",
                     "schedule_jitter_minutes": 20,
                 },
             )
             assert status == 201
             assert first["schedule_enabled"] is True
+            assert first["schedule_timezone"] == "Asia/Shanghai"
             assert first["next_scheduled_at"] is not None
             first_next_run = first["next_scheduled_at"]
             status, second = await request(
@@ -150,7 +162,7 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
                     "schedule_enabled": True,
                     "schedule_hour": 19,
                     "schedule_minute": 45,
-                    "schedule_timezone": "UTC",
+                    "schedule_timezone": "America/New_York",
                     "schedule_jitter_minutes": 5,
                 },
             )
@@ -162,8 +174,16 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
             assert first_job.trigger.jitter == 20 * 60
             assert str(first_job.trigger.timezone) == "Asia/Shanghai"
             assert second_job.trigger.jitter == 5 * 60
-            assert str(second_job.trigger.timezone) == "UTC"
+            assert str(second_job.trigger.timezone) == "Asia/Shanghai"
             assert app.state.container.scheduler.next_run_at(first["id"]) == first_next_run
+
+            config["schedule_timezone"] = "America/New_York"
+            status, config = await request(app, "PUT", "/api/config", headers=headers, payload=config)
+            assert status == 200
+            first_job = app.state.container.scheduler.scheduler.get_job(f"daily-checkin:{first['id']}")
+            second_job = app.state.container.scheduler.scheduler.get_job(f"daily-checkin:{second['id']}")
+            assert str(first_job.trigger.timezone) == "America/New_York"
+            assert str(second_job.trigger.timezone) == "America/New_York"
 
             status, assigned = await request(
                 app,
@@ -178,6 +198,7 @@ def test_account_proxy_crud_and_bulk_assignment(tmp_path: Path) -> None:
             status, accounts = await request(app, "GET", "/api/accounts", headers=headers)
             assert status == 200
             assert all(account["proxy"]["id"] == proxy["id"] for account in accounts)
+            assert all(account["schedule_timezone"] == "America/New_York" for account in accounts)
 
     asyncio.run(scenario())
 
@@ -282,8 +303,31 @@ def test_login_and_checkin_use_service_contracts(tmp_path: Path, monkeypatch) ->
         assert kwargs["proxy_url"] == "http://proxy-user:proxy-password@127.0.0.1:8080"
         return CheckinResult(True, 200, "Checked in", {"success": True}, "2026-01-01T00:00:00+00:00")
 
+    def fake_balance(**kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Balance work must run outside the ASGI event loop")
+        assert kwargs["cookie"] == "session=refreshed"
+        assert kwargs["user_id"] == "42"
+        assert kwargs["proxy_url"] == "http://proxy-user:proxy-password@127.0.0.1:8080"
+        assert kwargs["balance_path"] == "/api/user/self"
+        assert kwargs["status_path"] == "/api/status"
+        return BalanceResult(
+            True,
+            200,
+            "Balance: $2.00",
+            1_000_000,
+            2.0,
+            "$2.00",
+            "2026-01-01T00:01:00+00:00",
+        )
+
     monkeypatch.setattr("backend.app.services.retrieve_session_cookie", fake_login)
     monkeypatch.setattr("backend.app.services.perform_checkin", fake_checkin)
+    monkeypatch.setattr("backend.app.services.fetch_balance", fake_balance)
 
     async def scenario() -> None:
         app = create_app(make_settings(tmp_path))
@@ -322,9 +366,42 @@ def test_login_and_checkin_use_service_contracts(tmp_path: Path, monkeypatch) ->
             )
             assert batch[0]["success"] is True
 
+            balance = await run_in_threadpool(checkins.balance, account["id"])
+            assert balance["display"] == "$2.00"
+
+            balance_batch = await run_in_threadpool(
+                checkins.run_balance_batch,
+                [account["id"]],
+                enabled_only=False,
+                refresh_cookies=False,
+            )
+            assert balance_batch[0]["quota"] == 1_000_000
+
+            headers = await authenticate(app)
+            status, api_balance = await request(
+                app,
+                "POST",
+                f"/api/accounts/{account['id']}/balance",
+                headers=headers,
+            )
+            assert status == 200
+            assert api_balance["display"] == "$2.00"
+
+            status, api_batch = await request(
+                app,
+                "POST",
+                "/api/balances/run",
+                headers=headers,
+                payload={"account_ids": [account["id"]], "enabled_accounts_only": False},
+            )
+            assert status == 200
+            assert api_batch["results"][0]["success"] is True
+
             stored = repository.get_account(account["id"])
             assert stored["has_cookie"] is True
             assert stored["last_checkin_status"] == "success"
+            assert stored["last_balance_status"] == "success"
+            assert stored["last_balance_display"] == "$2.00"
 
     asyncio.run(scenario())
 

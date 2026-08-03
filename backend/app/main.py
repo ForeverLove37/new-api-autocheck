@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
+from zoneinfo import available_timezones
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
@@ -23,6 +24,9 @@ from backend.app.schemas import (
     AccountUpdate,
     ActionResult,
     AuthStatus,
+    BalanceActionResult,
+    BalanceRunRequest,
+    BatchBalanceResponse,
     BatchCheckinResponse,
     CheckinRunRequest,
     LegacyImportRequest,
@@ -82,6 +86,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 import_proxies=repository.count_proxies() == 0,
             )
         repository.migrate_global_schedule()
+        repository.set_global_schedule_timezone(repository.get_site_config()["schedule_timezone"])
         scheduler.start()
         try:
             yield
@@ -108,9 +113,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     def get_container(request: Request) -> Container:
         return request.app.state.container
 
-    def account_response(container: Container, account: dict) -> AccountResponse:
+    def account_response(
+        container: Container,
+        account: dict,
+        schedule_timezone: str | None = None,
+    ) -> AccountResponse:
+        schedule_timezone = schedule_timezone or container.repository.get_site_config()["schedule_timezone"]
         return AccountResponse(
-            **account,
+            **{**account, "schedule_timezone": schedule_timezone},
             next_scheduled_at=container.scheduler.next_run_at(int(account["id"])),
         )
 
@@ -160,14 +170,20 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @app.get("/api/accounts", response_model=list[AccountResponse])
     async def list_accounts(request: Request, _: None = Depends(require_admin)) -> list[AccountResponse]:
         container = get_container(request)
-        return [account_response(container, item) for item in container.repository.list_accounts()]
+        schedule_timezone = container.repository.get_site_config()["schedule_timezone"]
+        return [
+            account_response(container, item, schedule_timezone)
+            for item in container.repository.list_accounts()
+        ]
 
     @app.post("/api/accounts", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
     async def create_account(
         payload: AccountCreate, request: Request, _: None = Depends(require_admin)
     ) -> AccountResponse:
         container = get_container(request)
-        account = container.repository.create_account(payload.model_dump())
+        values = payload.model_dump()
+        values["schedule_timezone"] = container.repository.get_site_config()["schedule_timezone"]
+        account = container.repository.create_account(values)
         container.scheduler.refresh(int(account["id"]))
         return account_response(container, account)
 
@@ -182,6 +198,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     ) -> AccountResponse:
         container = get_container(request)
         changes = payload.model_dump(exclude_unset=True)
+        changes.pop("schedule_timezone", None)
         account = container.repository.update_account(account_id, changes)
         container.scheduler.refresh(account_id)
         return account_response(container, account)
@@ -228,6 +245,35 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         return BatchCheckinResponse(results=[ActionResult(**item) for item in results])
 
+    @app.post("/api/accounts/{account_id}/balance", response_model=BalanceActionResult)
+    async def check_account_balance(
+        account_id: int,
+        request: Request,
+        _: None = Depends(require_admin),
+        refresh_cookie: bool = Query(default=False),
+    ) -> BalanceActionResult:
+        result = await run_in_threadpool(
+            get_container(request).checkins.balance,
+            account_id,
+            refresh_cookie=refresh_cookie,
+        )
+        return BalanceActionResult(**result)
+
+    @app.post("/api/balances/run", response_model=BatchBalanceResponse)
+    async def run_balance_checks(
+        payload: BalanceRunRequest, request: Request, _: None = Depends(require_admin)
+    ) -> BatchBalanceResponse:
+        try:
+            results = await run_in_threadpool(
+                get_container(request).checkins.run_balance_batch,
+                payload.account_ids,
+                enabled_only=payload.enabled_accounts_only,
+                refresh_cookies=payload.refresh_cookies,
+            )
+        except OperationInProgressError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return BatchBalanceResponse(results=[BalanceActionResult(**item) for item in results])
+
     @app.get("/api/proxies", response_model=list[ProxyResponse])
     async def list_proxies(request: Request, _: None = Depends(require_admin)) -> list[ProxyResponse]:
         proxies = get_container(request).repository.list_proxies()
@@ -268,8 +314,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @app.put("/api/config", response_model=SiteConfig)
     async def update_config(payload: SiteConfig, request: Request, _: None = Depends(require_admin)) -> SiteConfig:
         container = get_container(request)
+        previous_timezone = container.repository.get_site_config()["schedule_timezone"]
         saved = container.repository.save_site_config(payload.model_dump())
+        if saved["schedule_timezone"] != previous_timezone:
+            container.repository.set_global_schedule_timezone(saved["schedule_timezone"])
+            container.scheduler.refresh()
         return SiteConfig(**saved)
+
+    @app.get("/api/timezones", response_model=list[str])
+    async def timezones(_: None = Depends(require_admin)) -> list[str]:
+        zones = available_timezones() | {"UTC"}
+        return ["UTC", *sorted(zone for zone in zones if zone != "UTC")]
 
     @app.get("/api/logs", response_model=list[LogResponse])
     async def logs(

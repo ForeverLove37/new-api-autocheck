@@ -6,6 +6,7 @@ const state = {
   accounts: [],
   proxies: [],
   config: null,
+  timezones: [],
   logs: [],
   selectedAccounts: new Set(),
 };
@@ -47,7 +48,22 @@ function escapeHtml(value) {
 function formatDate(value) {
   if (!value) return "Not yet";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  if (Number.isNaN(date.getTime())) return value;
+  const timeZone = state.config?.schedule_timezone || "UTC";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZone,
+      timeZoneName: "short",
+    }).format(date);
+  } catch {
+    return date.toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" });
+  }
 }
 
 function formatSchedule(account) {
@@ -58,7 +74,8 @@ function formatSchedule(account) {
     ? ` + 0-${account.schedule_jitter_minutes} min`
     : "";
   const nextRun = account.enabled ? formatDate(account.next_scheduled_at) : "Account disabled";
-  return `<div class="cell-primary">${hour}:${minute}${escapeHtml(jitter)}</div><div class="cell-secondary">${escapeHtml(account.schedule_timezone)} | ${escapeHtml(nextRun)}</div>`;
+  const timeZone = state.config?.schedule_timezone || "UTC";
+  return `<div class="cell-primary">${hour}:${minute}${escapeHtml(jitter)}</div><div class="cell-secondary">${escapeHtml(timeZone)} | ${escapeHtml(nextRun)}</div>`;
 }
 
 function statusBadge(status, fallback = "Not run") {
@@ -106,17 +123,19 @@ function showApplication() {
 }
 
 async function loadData() {
-  const [summary, accounts, proxies, config, logs] = await Promise.all([
+  const [summary, accounts, proxies, config, timezones, logs] = await Promise.all([
     api("/api/summary"),
     api("/api/accounts"),
     api("/api/proxies"),
     api("/api/config"),
+    api("/api/timezones"),
     api("/api/logs?limit=80"),
   ]);
   state.summary = summary;
   state.accounts = accounts;
   state.proxies = proxies;
   state.config = config;
+  state.timezones = timezones;
   state.logs = logs;
   state.selectedAccounts = new Set(
     [...state.selectedAccounts].filter((id) => accounts.some((account) => account.id === id)),
@@ -157,6 +176,7 @@ function renderOverview() {
           <p class="view-subtitle">${escapeHtml(state.config?.base_url || "No site configured")}</p>
         </div>
         <div class="toolbar">
+          <button class="button button-quiet" data-action="balance-all" type="button">Check balances</button>
           <button class="button button-quiet" data-action="run-all-refresh" type="button">Refresh sessions and run</button>
           <button class="button button-primary" data-action="run-all" type="button">Run enabled accounts</button>
         </div>
@@ -197,6 +217,7 @@ function renderAccounts() {
           <button class="button button-quiet" data-action="assign-proxy" type="button" ${selectedCount ? "" : "disabled"}>Assign proxy</button>
         </div>
         <div class="action-row">
+          <button class="button button-quiet" data-action="balance-selected" type="button" ${selectedCount ? "" : "disabled"}>Check balances</button>
           <button class="button button-quiet" data-action="run-selected-refresh" type="button" ${selectedCount ? "" : "disabled"}>Refresh and run selected</button>
           <button class="button button-primary" data-action="run-selected" type="button" ${selectedCount ? "" : "disabled"}>Run selected</button>
         </div>
@@ -229,10 +250,12 @@ function accountTable(accounts, options = {}) {
           <td>${account.proxy ? `<div class="cell-primary">${escapeHtml(account.proxy.name)}</div><div class="cell-secondary">${escapeHtml(account.proxy.scheme)}://${escapeHtml(account.proxy.host)}:${account.proxy.port}</div>` : '<span class="muted">Direct</span>'}</td>
           <td>${formatSchedule(account)}</td>
           <td><div>${statusBadge(account.last_checkin_status)}</div><div class="cell-secondary">${escapeHtml(formatDate(account.last_checkin_at))}</div></td>
+          <td><div class="cell-primary">${escapeHtml(account.last_balance_display || "Not checked")}</div><div>${statusBadge(account.last_balance_status)}</div><div class="cell-secondary">${escapeHtml(formatDate(account.last_balance_at))}</div></td>
           <td>
             <div class="table-actions">
               <button class="button button-quiet" data-action="login-account" data-id="${account.id}" type="button">Login</button>
               <button class="button button-quiet" data-action="checkin-account" data-id="${account.id}" type="button">Check in</button>
+              <button class="button button-quiet" data-action="balance-account" data-id="${account.id}" type="button">Balance</button>
               <button class="button button-quiet" data-action="edit-account" data-id="${account.id}" type="button">Edit</button>
               <button class="button button-danger" data-action="delete-account" data-id="${account.id}" type="button">Delete</button>
             </div>
@@ -242,8 +265,8 @@ function accountTable(accounts, options = {}) {
     .join("");
   return `
     <div class="data-panel table-wrap">
-      <table>
-        <thead><tr>${selectionHeader}<th>Account</th><th>State</th><th>Session</th><th>Proxy</th><th>Schedule</th><th>Last check-in</th><th></th></tr></thead>
+      <table class="account-table">
+        <thead><tr>${selectionHeader}<th>Account</th><th>State</th><th>Session</th><th>Proxy</th><th>Schedule</th><th>Last check-in</th><th>Balance</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -285,7 +308,7 @@ function renderSettings() {
   return `
     <section class="view">
       <header class="view-header">
-        <div><h1 class="view-title">Site settings</h1><p class="view-subtitle">Target URLs, browser selectors, and administrator access</p></div>
+        <div><h1 class="view-title">Site settings</h1><p class="view-subtitle">Target, scheduling, browser, and administrator settings</p></div>
       </header>
       <form class="stacked-form" data-form="settings">
         <section class="form-section">
@@ -294,8 +317,16 @@ function renderSettings() {
             <label class="field-span-full">Base URL<input name="base_url" required value="${escapeHtml(config.base_url)}" /></label>
             <label>Login path or URL<input name="login_path" required value="${escapeHtml(config.login_path)}" /></label>
             <label>Check-in path or URL<input name="checkin_path" required value="${escapeHtml(config.checkin_path)}" /></label>
+            <label>Balance path or URL<input name="balance_path" required value="${escapeHtml(config.balance_path)}" /></label>
+            <label>Status path or URL<input name="status_path" required value="${escapeHtml(config.status_path)}" /></label>
             <label>Referer path or URL<input name="referer_path" value="${escapeHtml(config.referer_path || "")}" /></label>
             <label>Request timeout (seconds)<input name="request_timeout_seconds" type="number" min="3" max="120" required value="${config.request_timeout_seconds}" /></label>
+          </div>
+        </section>
+        <section class="form-section">
+          <h2>Scheduling and records</h2>
+          <div class="field-grid">
+            <label>Global timezone<select name="schedule_timezone" required>${timezoneOptions(config.schedule_timezone)}</select></label>
           </div>
         </section>
         <section class="form-section">
@@ -341,7 +372,7 @@ function renderActivity() {
   return `
     <section class="view">
       <header class="view-header">
-        <div><h1 class="view-title">Activity</h1><p class="view-subtitle">Latest login and check-in attempts</p></div>
+        <div><h1 class="view-title">Activity</h1><p class="view-subtitle">Latest login, check-in, and balance attempts</p></div>
       </header>
       <div class="data-panel table-wrap">
         ${rows ? `<table><thead><tr><th>Time</th><th>Account</th><th>Action</th><th>Result</th><th>HTTP</th><th>Message</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty-state">No activity has been recorded.</div>'}
@@ -354,6 +385,15 @@ function proxyOptions(selectedId = null) {
     .map(
       (proxy) => `<option value="${proxy.id}" ${Number(selectedId) === proxy.id ? "selected" : ""}>${escapeHtml(proxy.name)} (${escapeHtml(proxy.scheme)}://${escapeHtml(proxy.host)}:${proxy.port})</option>`,
     )
+    .join("");
+}
+
+function timezoneOptions(selectedTimezone) {
+  const timezones = state.timezones.includes(selectedTimezone)
+    ? state.timezones
+    : [selectedTimezone, ...state.timezones];
+  return timezones
+    .map((timezone) => `<option value="${escapeHtml(timezone)}" ${timezone === selectedTimezone ? "selected" : ""}>${escapeHtml(timezone)}</option>`)
     .join("");
 }
 
@@ -391,7 +431,6 @@ function openAccountModal(account = null) {
           <label class="check-label field-span-full"><input name="schedule_enabled" type="checkbox" ${account?.schedule_enabled ? "checked" : ""} />Enable automatic check-in</label>
           <label>Hour<input name="schedule_hour" type="number" min="0" max="23" required value="${account?.schedule_hour ?? 8}" /></label>
           <label>Minute<input name="schedule_minute" type="number" min="0" max="59" required value="${account?.schedule_minute ?? 0}" /></label>
-          <label>Timezone<input name="schedule_timezone" required value="${escapeHtml(account?.schedule_timezone || "UTC")}" /></label>
           <label>Random delay (minutes)<input name="schedule_jitter_minutes" type="number" min="0" max="720" required value="${account?.schedule_jitter_minutes ?? 0}" /></label>
         </div>
       </form>`,
@@ -433,6 +472,27 @@ async function runBatch(accountIds, refreshCookies, button) {
     });
     const successCount = result.results.filter((item) => item.success).length;
     toast(`${successCount} of ${result.results.length} check-ins succeeded.`);
+    await refreshAndRender();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function runBalanceBatch(accountIds, button) {
+  if (accountIds && !accountIds.length) {
+    toast("Select at least one account.", true);
+    return;
+  }
+  setButtonBusy(button, true);
+  try {
+    const result = await api("/api/balances/run", {
+      method: "POST",
+      body: JSON.stringify({ account_ids: accountIds, enabled_accounts_only: !accountIds, refresh_cookies: false }),
+    });
+    const successCount = result.results.filter((item) => item.success).length;
+    toast(`${successCount} of ${result.results.length} balance checks succeeded.`);
     await refreshAndRender();
   } catch (error) {
     toast(error.message, true);
@@ -484,6 +544,22 @@ async function handleAction(action, button) {
       } finally {
         setButtonBusy(button, false);
       }
+      return;
+    case "balance-account":
+      setButtonBusy(button, true);
+      try {
+        const result = await api(`/api/accounts/${id}/balance`, { method: "POST" });
+        toast(result.message, !result.success);
+        await refreshAndRender();
+      } finally {
+        setButtonBusy(button, false);
+      }
+      return;
+    case "balance-all":
+      await runBalanceBatch(null, button);
+      return;
+    case "balance-selected":
+      await runBalanceBatch([...state.selectedAccounts], button);
       return;
     case "run-all":
       await runBatch(null, false, button);
@@ -622,7 +698,6 @@ async function submitAccount(form) {
     schedule_enabled: form.schedule_enabled.checked,
     schedule_hour: Number(values.get("schedule_hour")),
     schedule_minute: Number(values.get("schedule_minute")),
-    schedule_timezone: values.get("schedule_timezone").trim(),
     schedule_jitter_minutes: Number(values.get("schedule_jitter_minutes")),
   };
   if (!isEdit || password) payload.password = password || null;
@@ -675,12 +750,18 @@ async function submitSettings(form) {
     base_url: values.get("base_url").trim(),
     login_path: values.get("login_path").trim(),
     checkin_path: values.get("checkin_path").trim(),
+    balance_path: values.get("balance_path").trim(),
+    status_path: values.get("status_path").trim(),
     referer_path: values.get("referer_path").trim() || null,
     username_selector: values.get("username_selector").trim(),
     password_selector: values.get("password_selector").trim(),
     submit_selector: values.get("submit_selector").trim() || null,
     post_login_path: values.get("post_login_path").trim() || null,
     custom_headers: headers,
+    schedule_enabled: state.config.schedule_enabled,
+    schedule_hour: state.config.schedule_hour,
+    schedule_minute: state.config.schedule_minute,
+    schedule_timezone: values.get("schedule_timezone"),
     request_timeout_seconds: Number(values.get("request_timeout_seconds")),
   };
   await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });

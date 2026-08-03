@@ -15,6 +15,8 @@ DEFAULT_SITE_CONFIG: dict[str, Any] = {
     "base_url": "https://liangjiewis.com",
     "login_path": "/login",
     "checkin_path": "/api/user/checkin",
+    "balance_path": "/api/user/self",
+    "status_path": "/api/status",
     "referer_path": "/console/personal",
     "username_selector": 'input[type="email"], input[type="text"]',
     "password_selector": 'input[type="password"]',
@@ -293,6 +295,18 @@ class Repository:
             )
         return config
 
+    def set_global_schedule_timezone(self, schedule_timezone: str) -> int:
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE accounts
+                SET schedule_timezone = ?, updated_at = ?
+                WHERE schedule_timezone != ?
+                """,
+                (schedule_timezone, self._now(), schedule_timezone),
+            )
+        return cursor.rowcount
+
     def migrate_global_schedule(self) -> None:
         marker_key = "account_schedule_migration_v1"
         with self.database.connection() as connection:
@@ -355,6 +369,47 @@ class Repository:
                 """,
                 (timestamp, "success" if success else "failed", message[:1_000], self._now(), account_id),
             )
+
+    def set_balance_status(
+        self,
+        account_id: int,
+        *,
+        success: bool,
+        message: str,
+        timestamp: str,
+        quota: float | None = None,
+        balance: float | None = None,
+        display: str | None = None,
+    ) -> None:
+        with self.database.connection() as connection:
+            if success:
+                connection.execute(
+                    """
+                    UPDATE accounts
+                    SET last_balance_quota = ?, last_balance_amount = ?, last_balance_display = ?,
+                        last_balance_at = ?, last_balance_status = ?, last_balance_message = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        quota,
+                        balance,
+                        display,
+                        timestamp,
+                        "success",
+                        message[:1_000],
+                        self._now(),
+                        account_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE accounts
+                    SET last_balance_at = ?, last_balance_status = ?, last_balance_message = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (timestamp, "failed", message[:1_000], self._now(), account_id),
+                )
 
     def record_log(
         self,
@@ -602,6 +657,12 @@ class Repository:
             "last_checkin_at": row["last_checkin_at"],
             "last_checkin_status": row["last_checkin_status"],
             "last_checkin_message": row["last_checkin_message"],
+            "last_balance_quota": row["last_balance_quota"],
+            "last_balance_amount": row["last_balance_amount"],
+            "last_balance_display": row["last_balance_display"],
+            "last_balance_at": row["last_balance_at"],
+            "last_balance_status": row["last_balance_status"],
+            "last_balance_message": row["last_balance_message"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
